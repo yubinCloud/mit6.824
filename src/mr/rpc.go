@@ -24,6 +24,31 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type AskTaskArgs struct {
+}
+
+type AskTaskReply struct {
+	TaskType      string
+	TaskId        int
+	InputFileName string
+	ReduceNum     int
+}
+
+// TaskType 可能的取值
+const (
+	MAPPER_TASK    = "mapper"
+	REDUCER_TASK   = "reducer"
+	EMPTY_TASK     = "empty"
+	TERMINATE_TASK = "terminate"
+)
+
+type ReportMapperTaskCompletedArgs struct {
+	MapperId      int
+	InputFilename string
+}
+
+type ReportMapperTaskCompletedReply struct {
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
