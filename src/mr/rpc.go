@@ -42,12 +42,26 @@ const (
 	TERMINATE_TASK = "terminate"
 )
 
+type IntermediateFileInfo struct {
+	ReducerId int
+	FileName  string
+}
+
 type ReportMapperTaskCompletedArgs struct {
-	MapperId      int
-	InputFilename string
+	MapperId          int
+	InputFilename     string
+	IntermediateFiles []IntermediateFileInfo
 }
 
 type ReportMapperTaskCompletedReply struct {
+}
+
+type ReportReducerTaskCompletedArgs struct {
+	ReducerId int
+	OutFile   string
+}
+
+type ReportReducerTaskCompletedReply struct {
 }
 
 // Cook up a unique-ish UNIX-domain socket name
