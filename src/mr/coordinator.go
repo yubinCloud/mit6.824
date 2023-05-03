@@ -12,10 +12,10 @@ import "net/rpc"
 import "net/http"
 
 type Task struct {
-	TaskType        string
-	TaskId          int
-	filename        string
-	assignBeginTime time.Time
+	TaskType        string    // task 的类型：mapper、reducer、empty 和 terminate 之一
+	TaskId          int       // 负责完成这个 task 的 mapper 或 reducer 的 ID
+	filename        string    // task 输入的文件名
+	assignBeginTime time.Time // task 分配下去的时间
 }
 
 type Coordinator struct {
