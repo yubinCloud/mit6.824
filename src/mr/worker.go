@@ -40,11 +40,18 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	failedCnt := 0
 	for {
 		task, err := AskTask()
 		if err != nil {
-			return
+			if failedCnt >= 3 {
+				return
+			}
+			failedCnt += 1
+			time.Sleep(time.Duration(3) * time.Second)
+			continue
 		}
+		failedCnt = 0
 		log.Printf("recv task, type: %v, id: %d", task.TaskType, task.TaskId)
 		isExit := taskHandler(task, mapf, reducef)
 		if isExit {
@@ -57,11 +64,12 @@ func Worker(mapf func(string, string) []KeyValue,
 func taskHandler(task *AskTaskReply, mapf func(string, string) []KeyValue, reducef func(string, []string) string) (isExit bool) {
 	taskType := task.TaskType
 	if taskType == TERMINATE_TASK {
+		time.Sleep(time.Duration(3) * time.Second)
 		log.Printf("worker pid %d exists", os.Getgid())
 		return true
 	}
 	if taskType == EMPTY_TASK {
-		time.Sleep(time.Duration(2) * time.Second)
+		time.Sleep(time.Duration(3) * time.Second)
 		return false
 	}
 	if taskType == MAPPER_TASK {
@@ -132,7 +140,7 @@ func execReduceTask(task *AskTaskReply, reducef func(string, []string) string) (
 		}
 		var values []string
 		for k := i; k < j; k++ {
-			values = append(values, intermediate[k].Key)
+			values = append(values, intermediate[k].Value)
 		}
 		outV := reducef(intermediate[i].Key, values)
 		fmt.Fprintf(outTempFile, "%v %v\n", intermediate[i].Key, outV)

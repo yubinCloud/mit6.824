@@ -34,6 +34,7 @@ func Map(filename string, contents string) []mr.KeyValue {
 func Reduce(key string, values []string) string {
 	files, err := ioutil.ReadDir(".")
 	if err != nil {
+		fmt.Println("Reduce function panic")
 		panic(err)
 	}
 	invocations := 0

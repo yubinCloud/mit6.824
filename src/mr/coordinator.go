@@ -150,7 +150,7 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-const EXPIRED_TIME = time.Duration(10) * time.Second
+const EXPIRED_TIME = time.Duration(8) * time.Second
 
 func (c *Coordinator) checkTasks() {
 	for {
@@ -198,6 +198,7 @@ func (c *Coordinator) Done() bool {
 	c.mu.Lock()
 	if len(c.CompletedReducerTasks) == c.ReducerNum {
 		log.Print("all tasks have been completed!")
+		log.Printf("output files: %v", c.ReduceOutputFiles)
 		ret = true
 	}
 	c.mu.Unlock()
@@ -233,8 +234,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.MapperTasks[filename] = &mapperTask
 		c.IdleMapperTasks = append(c.IdleMapperTasks, &mapperTask)
 	}
+	// reverse
+	for i, j := 0, len(c.IdleMapperTasks)-1; i < j; i, j = i+1, j-1 {
+		c.IdleMapperTasks[i], c.IdleMapperTasks[j] = c.IdleMapperTasks[j], c.IdleMapperTasks[i]
+	}
 
-	for reducerId := 0; reducerId < nReduce; reducerId++ {
+	for reducerId := nReduce - 1; reducerId >= 0; reducerId-- {
 		taskPtr := &c.ReducerTasks[reducerId]
 		taskPtr.TaskType = REDUCER_TASK
 		taskPtr.TaskId = reducerId
