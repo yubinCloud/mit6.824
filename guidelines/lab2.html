@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<!-- saved from url=(0051)https://pdos.csail.mit.edu/6.824/labs/lab-raft.html -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=windows-1252"><style data-merge-styles="true"></style>
+<style data-merge-styles="true"></style><style data-merge-styles="true"></style><link rel="stylesheet" href="./lab2/style.css" type="text/css">
+<script src="./lab2/guidance.js.&#19979;&#36733;"></script><script src="chrome-extension://opgifgeiehclfkpdfbeeibhcbgcgkpgf/dist/ruffle.js?id=46195881409"></script>
+<title>6.5840 Lab 2: Raft</title>
+</head>
+<body>
+<div align="center">
+<h2><a href="https://pdos.csail.mit.edu/6.824/index.html">6.5840</a> - Spring 2023</h2>
+<h1>6.5840 Lab 2: Raft</h1>
+<h3>Part 2A Due: Friday Feb 24 23:59</h3>
+<h3>Part 2B Due: Friday Mar  3 23:59</h3>
+<h3>Part 2C Due: Friday Mar 10 23:59</h3>
+<h3>Part 2D Due: Friday Mar 17 23:59</h3>
+
+
+<p>
+  <b><a href="https://pdos.csail.mit.edu/6.824/labs/collab.html">Collaboration policy</a></b> //
+  <b><a href="https://pdos.csail.mit.edu/6.824/labs/submit.html">Submit lab</a></b> //
+  <b><a href="https://pdos.csail.mit.edu/6.824/labs/go.html">Setup Go</a></b> //
+  <b><a href="https://pdos.csail.mit.edu/6.824/labs/guidance.html">Guidance</a></b> //
+  <b><a href="https://piazza.com/mit/spring2023/65840">Piazza</a></b>
+</p>
+
+</div>
+
+
+<hr>
+
+<h3>Introduction</h3>
+
+<p>
+This is the first in a series of labs in which you'll build a
+fault-tolerant key/value storage system. In this
+lab you'll implement Raft, a replicated state machine protocol.
+In the next lab you'll build a key/value service on top of
+Raft. Then you will �shard� your service over
+multiple replicated state machines for higher performance.
+
+</p><p>
+A replicated service achieves fault
+tolerance by storing complete copies of its state (i.e., data)
+on multiple replica servers.
+Replication allows
+the service to continue operating even if some of
+its servers experience failures (crashes or a broken or flaky
+network). The challenge is that failures may cause the
+replicas to hold differing copies of the data.
+
+</p><p>
+Raft organizes client requests into a sequence, called
+the log, and ensures that all the replica servers see the same log.
+Each replica executes client requests
+in log order, applying them to its local copy of the service's state.
+Since all the live replicas
+see the same log contents, they all execute the same requests
+in the same order, and thus continue to have identical service
+state. If a server fails but later recovers, Raft takes care of
+bringing its log up to date. Raft will continue to operate as
+long as at least a majority of the servers are alive and can
+talk to each other. If there is no such majority, Raft will
+make no progress, but will pick up where it left off as soon as
+a majority can communicate again.
+
+</p><p>
+In this lab you'll implement Raft as a Go object type
+with associated methods, meant to be used as a module in a
+larger service. A set of Raft instances talk to each other with
+RPC to maintain replicated logs. Your Raft interface will
+support an indefinite sequence of numbered commands, also
+called log entries. The entries are numbered with <em>index
+numbers</em>. The log entry with a given index will eventually
+be committed. At that point, your Raft should send the log
+entry to the larger service for it to execute.
+
+</p><p>
+You should follow the design in the
+<a href="https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf">extended Raft paper</a>,
+with particular attention to Figure 2.
+You'll implement most of what's in the paper, including saving
+persistent state and reading it after a node fails and
+then restarts. You will not implement cluster
+membership changes (Section 6).
+
+</p><p>
+You may find this
+<a href="https://thesquareplanet.com/blog/students-guide-to-raft/">guide</a>
+useful, as well as this advice about
+<a href="https://pdos.csail.mit.edu/6.824/labs/raft-locking.txt">locking</a>
+and
+<a href="https://pdos.csail.mit.edu/6.824/labs/raft-structure.txt">structure</a>
+for concurrency.
+For a
+wider perspective, have a look at Paxos, Chubby, Paxos Made
+Live, Spanner, Zookeeper, Harp, Viewstamped Replication, and
+<a href="http://static.usenix.org/event/nsdi11/tech/full_papers/Bolosky.pdf">Bolosky et al.</a>
+(Note: the student's guide was written several years ago, and part 2D in particular has
+since changed. Make sure you understand why a particular implementation strategy makes
+sense before blindly following it!)
+
+</p><p>
+Keep in mind that the most challenging part of this lab may not be implementing your solution, but debugging it.
+To help address this challenge, you may wish to spend time thinking about how to make your implementation more easily debuggable. You might refer to the <a href="https://pdos.csail.mit.edu/6.824/labs/guidance.html">Guidance</a> page and to <a href="https://blog.josejg.com/debugging-pretty/">this blog post about effective print statements</a>.
+
+</p><p>
+We also provide a <a href="https://pdos.csail.mit.edu/6.824/notes/raft_diagram.pdf">diagram of Raft interactions</a> that can
+help clarify how your Raft code interacts with the layers on top of it.
+
+</p><p>
+This lab is due in four parts. You must submit each part on the
+corresponding due date.
+
+</p><h3>Getting Started</h3>
+
+<p>
+If you have done Lab 1, you already have a copy of the lab
+source code.
+If not,
+you can find directions for obtaining the source via git
+in the <a href="https://pdos.csail.mit.edu/6.824/labs/lab-mr.html">Lab 1 instructions</a>.
+
+</p><p>
+We supply you with skeleton code <tt>src/raft/raft.go</tt>. We also
+supply a set of tests, which you should use to drive your
+implementation efforts, and which we'll use to grade your submitted
+lab. The tests are in <tt>src/raft/test_test.go</tt>.
+
+</p><p>
+When we grade your submissions, we will run the tests without the <a href="https://go.dev/blog/race-detector"><tt>-race</tt> flag</a>.
+However, you should check that your code does not have races,
+by running
+the tests with the <tt>-race</tt> flag as you develop your solution.
+
+</p><p>
+To get up and running, execute the following commands.
+Don't forget the <tt>git pull</tt> to get the latest software.
+</p><pre>$ cd ~/6.5840
+$ git pull
+...
+$ cd src/raft
+$ go test
+Test (2A): initial election ...
+--- FAIL: TestInitialElection2A (5.04s)
+        config.go:326: expected one leader, got none
+Test (2A): election after network failure ...
+--- FAIL: TestReElection2A (5.03s)
+        config.go:326: expected one leader, got none
+...
+$
+</pre>
+
+<h3>The code</h3>
+
+Implement Raft by adding code to
+<tt>raft/raft.go</tt>. In that file you'll find
+skeleton code, plus examples of how to send and receive
+RPCs.
+
+<p>
+Your implementation must support the following interface, which
+the tester and (eventually) your key/value server will use.
+You'll find more details in comments in <tt>raft.go</tt>.
+
+</p><pre>// create a new Raft server instance:
+rf := Make(peers, me, persister, applyCh)
+
+// start agreement on a new log entry:
+rf.Start(command interface{}) (index, term, isleader)
+
+// ask a Raft for its current term, and whether it thinks it is leader
+rf.GetState() (term, isLeader)
+
+// each time a new entry is committed to the log, each Raft peer
+// should send an ApplyMsg to the service (or tester).
+type ApplyMsg</pre>
+
+<p>
+A service calls <tt>Make(peers,me,�)</tt> to create a
+Raft peer. The peers argument is an array of network identifiers
+of the Raft peers (including this one), for use with RPC. The
+<tt>me</tt> argument is the index of this peer in the peers
+array. <tt>Start(command)</tt> asks Raft to start the processing
+to append the command to the replicated log. <tt>Start()</tt>
+should return immediately, without waiting for the log appends
+to complete. The service expects your implementation to send an
+<tt>ApplyMsg</tt> for each newly committed log entry to the
+<tt>applyCh</tt> channel argument to <tt>Make()</tt>.
+
+</p><p>
+<tt>raft.go</tt> contains example code that sends an RPC
+(<tt>sendRequestVote()</tt>) and that handles an incoming RPC
+(<tt>RequestVote()</tt>).
+Your Raft peers should exchange RPCs using the labrpc Go
+package (source in <tt>src/labrpc</tt>).
+The tester can tell <tt>labrpc</tt> to delay RPCs,
+re-order them, and discard them to simulate various network failures.
+While you can temporarily modify <tt>labrpc</tt>,
+make sure your Raft works with the original <tt>labrpc</tt>,
+since that's what we'll use to test and grade your lab.
+Your Raft instances must interact only with RPC; for example,
+they are not allowed to communicate using shared Go variables
+or files.
+
+</p><p>
+Subsequent labs build on this lab, so it is important to give
+yourself enough time to write solid code.
+
+</p><h3>Part 2A: leader election <script>g("moderate")</script>(<a class="moderate" href="https://pdos.csail.mit.edu/6.824/labs/guidance.html">moderate</a>)</h3>
+
+<p class="todo">
+Implement Raft leader election and heartbeats (<tt>AppendEntries</tt> RPCs with no
+log entries). The goal for Part 2A is for a
+single leader to be elected, for the leader to remain the leader
+if there are no failures, and for a new leader to take over if the
+old leader fails or if packets to/from the old leader are lost.
+Run <tt>go test -run 2A </tt> to test your 2A code.
+
+</p><ul class="hints">
+
+<li>You can't easily run your Raft implementation directly; instead you should
+run it by way of the tester, i.e. <tt>go test -run 2A </tt>.
+
+</li><li>Follow the paper's Figure 2. At this point you care about sending
+and receiving RequestVote RPCs, the Rules for Servers that relate to
+elections, and the State related to leader election,
+
+</li><li>
+Add the Figure 2 state for leader election
+to the <tt>Raft</tt> struct in <tt>raft.go</tt>.
+You'll also need to define a
+struct to hold information about each log entry.
+
+</li><li>
+Fill in the <tt>RequestVoteArgs</tt> and
+<tt>RequestVoteReply</tt> structs. Modify
+<tt>Make()</tt> to create a background goroutine that will kick off leader
+ election periodically by sending out <tt>RequestVote</tt> RPCs when it hasn't
+ heard from another peer for a while.  This way a peer will learn who is the
+ leader, if there is already a leader, or become the leader itself.  Implement
+ the <tt>RequestVote()</tt> RPC handler so that servers will vote for one
+ another.
+
+
+</li><li>
+To implement heartbeats, define an
+<tt>AppendEntries</tt> RPC struct (though you may not
+need all the arguments yet), and have the leader send
+them out periodically. Write an
+<tt>AppendEntries</tt> RPC handler method that resets
+the election timeout so that other servers don't step
+forward as leaders when one has already been elected.
+
+</li><li>
+Make sure the election timeouts in different peers don't always fire
+at the same time, or else all peers will vote only for themselves and no
+one will become the leader.
+
+</li><li>
+The tester requires that the leader send heartbeat RPCs no more than
+ten times per second.
+
+</li><li>
+The tester requires your Raft to elect a new leader within five seconds of the
+failure of the old leader (if a majority of peers can still
+communicate). Remember, however, that leader election may require multiple
+rounds in case of a split vote (which can happen if packets are lost or if
+candidates unluckily choose the same random backoff times). You must pick
+election timeouts (and thus heartbeat intervals) that are short enough that it's
+very likely that an election will complete in less than five seconds even if it
+requires multiple rounds.
+
+</li><li>
+The paper's Section 5.2 mentions election timeouts in the range of 150
+to 300 milliseconds. Such a range only makes sense if the leader
+sends heartbeats considerably more often than once per 150
+milliseconds (e.g., once per 10 milliseconds). Because the tester limits you tens of heartbeats per
+second, you will have to use an election timeout larger
+than the paper's 150 to 300 milliseconds, but not too large, because then you
+may fail to elect a leader within five seconds.
+
+</li><li>
+You may find Go's
+<a href="https://golang.org/pkg/math/rand/">rand</a>
+useful.
+
+</li><li>
+You'll need to write code that takes actions periodically or
+after delays in time. The easiest way to do this is to create
+a goroutine with a loop that calls
+<a href="https://golang.org/pkg/time/#Sleep">time.Sleep()</a>;
+see the <tt>ticker()</tt> goroutine that <tt>Make()</tt>
+creates for this purpose.
+Don't use Go's <tt>time.Timer</tt> or <tt>time.Ticker</tt>, which
+are difficult to use correctly.
+
+</li><li>The <a href="https://pdos.csail.mit.edu/6.824/labs/guidance.html">Guidance page</a> has some
+  tips on how to develop and debug your code.
+
+</li><li>
+If your code has trouble passing the tests,
+read the paper's Figure 2 again; the full logic for leader
+election is spread over multiple parts of the figure.
+
+</li><li>
+Don't forget to implement <tt>GetState()</tt>.
+
+</li><li>
+The tester calls your Raft's <tt>rf.Kill()</tt> when it is
+permanently shutting down an instance. You can check whether
+<tt>Kill()</tt> has been called using <tt>rf.killed()</tt>.
+You may want to do this in all loops, to avoid having
+dead Raft instances print confusing messages.
+
+
+</li><li>Go RPC sends only struct fields whose names start with capital letters.
+  Sub-structures must also have capitalized field names (e.g. fields of log records
+  in an array). The <tt>labgob</tt> package will warn you about this;
+  don't ignore the warnings.
+
+</li></ul>
+
+
+<p>
+Be sure you pass the 2A tests before submitting Part 2A, so that
+you see something like this:
+
+</p><pre>$ go test -run 2A
+Test (2A): initial election ...
+  ... Passed --   3.5  3   58   16840    0
+Test (2A): election after network failure ...
+  ... Passed --   5.4  3  118   25269    0
+Test (2A): multiple elections ...
+  ... Passed --   7.3  7  624  138014    0
+PASS
+ok  	6.5840/raft	16.265s
+$
+</pre>
+
+<p>
+Each "Passed" line contains five numbers; these are the time that the
+test took in seconds, the number of Raft peers, the
+number of RPCs sent during the test, the total number of bytes in the
+RPC messages, and the number of log entries
+that Raft reports were committed. Your numbers will differ from those
+shown here. You can ignore the numbers if you like, but they may help
+you sanity-check the number of RPCs that your implementation sends.
+For all of labs 2, 3, and 4, the grading script will fail your
+solution if it takes more than 600 seconds for all of the tests
+(<tt>go test</tt>), or if any individual test takes more than 120
+seconds.
+
+</p><p>
+When we grade your submissions, we will run the tests without the <a href="https://go.dev/blog/race-detector"><tt>-race</tt> flag</a>. However, you should make sure that your code
+consistently passes the tests with the <tt>-race</tt> flag.
+
+</p><h3>Part 2B: log <script>g("hard")</script>(<a class="hard" href="https://pdos.csail.mit.edu/6.824/labs/guidance.html">hard</a>)</h3>
+
+<p class="todo">
+Implement the leader and follower code to append new log entries,
+so that the <tt>go test -run 2B </tt> tests pass.
+
+</p><ul class="hints">
+
+<li>
+Run <tt>git pull</tt> to get the latest lab software.
+
+</li><li>
+Your first goal should be to pass <tt>TestBasicAgree2B()</tt>.
+Start by implementing <tt>Start()</tt>, then write the code
+to send and receive new log entries via <tt>AppendEntries</tt> RPCs,
+following Figure 2. Send each newly committed entry
+on <tt>applyCh</tt> on each peer.
+
+</li><li>
+You will need to implement the election
+restriction (section 5.4.1 in the paper).
+
+</li><li>
+One way to fail to reach agreement in the early Lab 2B
+tests is to hold repeated elections even though the
+leader is alive. Look for bugs in election timer
+management, or not sending out heartbeats immediately after winning an
+election.
+
+</li><li>
+Your code may have loops that repeatedly check for certain events.
+Don't have these loops
+execute continuously without pausing, since that
+will slow your implementation enough that it fails tests.
+Use Go's
+<a href="https://golang.org/pkg/sync/#Cond">condition variables</a>,
+or insert a
+<tt>time.Sleep(10 * time.Millisecond)</tt> in each loop iteration.
+
+</li><li>Do yourself a favor for future labs and write (or re-write) code
+that's clean and clear.  For ideas, re-visit our
+the <a href="https://pdos.csail.mit.edu/6.824/labs/guidance.html">Guidance page</a> with tips on how to
+  develop and debug your code.
+
+</li><li>If you fail a test, look over the code for the test
+  in <tt>config.go</tt> and <tt>test_test.go</tt> to get a better
+  understanding what the test is testing.  <tt>config.go</tt> also
+  illustrates how the tester uses the Raft API.
+
+</li></ul>
+
+<p>
+The tests for upcoming labs may fail your code if it runs too slowly.
+You can check how much real time and CPU time your solution uses with
+the time command. Here's typical output:
+
+</p><pre>$ time go test -run 2B
+Test (2B): basic agreement ...
+  ... Passed --   0.9  3   16    4572    3
+Test (2B): RPC byte count ...
+  ... Passed --   1.7  3   48  114536   11
+Test (2B): agreement after follower reconnects ...
+  ... Passed --   3.6  3   78   22131    7
+Test (2B): no agreement if too many followers disconnect ...
+  ... Passed --   3.8  5  172   40935    3
+Test (2B): concurrent Start()s ...
+  ... Passed --   1.1  3   24    7379    6
+Test (2B): rejoin of partitioned leader ...
+  ... Passed --   5.1  3  152   37021    4
+Test (2B): leader backs up quickly over incorrect follower logs ...
+  ... Passed --  17.2  5 2080 1587388  102
+Test (2B): RPC counts aren't too high ...
+  ... Passed --   2.2  3   60   20119   12
+PASS
+ok  	6.5840/raft	35.557s
+
+real	0m35.899s
+user	0m2.556s
+sys	0m1.458s
+$
+</pre>
+
+The "ok 6.5840/raft 35.557s" means that Go measured the time taken for the 2B
+tests to be 35.557 seconds of real (wall-clock) time. The "user
+0m2.556s" means that the code consumed 2.556 seconds of CPU time, or
+time spent actually executing instructions (rather than waiting or
+sleeping). If your solution uses much more than a minute of real time
+for the 2B tests, or much more than 5 seconds of CPU time, you may run
+into trouble later on. Look for time spent sleeping or waiting for RPC
+timeouts, loops that run without sleeping or waiting for conditions or
+channel messages, or large numbers of RPCs sent.
+
+<h3>Part 2C: persistence <script>g("hard")</script>(<a class="hard" href="https://pdos.csail.mit.edu/6.824/labs/guidance.html">hard</a>)</h3>
+
+<p>
+If a Raft-based server reboots it should resume service
+where it left off. This requires
+that Raft keep persistent state that survives a reboot. The
+paper's Figure 2 mentions which state should be persistent.
+
+</p><p>
+A real implementation would write
+Raft's persistent state to disk each time it changed, and would read the
+state from
+disk when restarting after a reboot. Your implementation won't use
+the disk; instead, it will save and restore persistent state
+from a <tt>Persister</tt> object (see <tt>persister.go</tt>).
+Whoever calls <tt>Raft.Make()</tt> supplies a <tt>Persister</tt>
+that initially holds Raft's most recently persisted state (if
+any). Raft should initialize its state from that
+<tt>Persister</tt>, and should use it to save its persistent
+state each time the state changes. Use the <tt>Persister</tt>'s
+<tt>ReadRaftState()</tt> and <tt>Save()</tt> methods.
+
+</p><p class="todo">
+Complete the functions
+<tt>persist()</tt>
+and
+<tt>readPersist()</tt> in <tt>raft.go</tt>
+by adding code to save and restore persistent state. You will need to encode
+(or "serialize") the state as an array of bytes in order to pass it to
+the <tt>Persister</tt>. Use the <tt>labgob</tt> encoder;
+see the comments in <tt>persist()</tt> and <tt>readPersist()</tt>.
+<tt>labgob</tt> is like Go's <tt>gob</tt> encoder but
+prints error messages if
+you try to encode structures with lower-case field names.
+For now, pass <tt>nil</tt> as the second argument to <tt>persister.Save()</tt>.
+Insert calls to <tt>persist()</tt> at the points where
+your implementation changes persistent state.
+Once you've done this,
+and if the rest of your implementation is correct,
+you should pass all of the 2C tests.
+
+</p><p>
+You will probably need the optimization that backs up
+nextIndex by more than one entry
+at a time. Look at the <a href="https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf">extended Raft paper</a> starting at
+the bottom of page 7 and top of page 8 (marked by a gray line).
+The paper is vague about the details; you will need to fill in the gaps.
+One possibility is to have a rejection message include:
+
+</p><pre>    XTerm:  term in the conflicting entry (if any)
+    XIndex: index of first entry with that term (if any)
+    XLen:   log length
+</pre>
+
+Then the leader's logic can be something like:
+
+<pre>  Case 1: leader doesn't have XTerm:
+    nextIndex = XIndex
+  Case 2: leader has XTerm:
+    nextIndex = leader's last entry for XTerm
+  Case 3: follower's log is too short:
+    nextIndex = XLen
+</pre>
+
+A few other hints:
+
+<ul class="hints">
+
+<li>
+Run <tt>git pull</tt> to get the latest lab software.
+
+</li><li>
+The 2C tests are more demanding than those for 2A or 2B, and failures
+may be caused by problems in your code for 2A or 2B.
+
+</li></ul>
+
+<p>
+Your code should pass all the 2C tests (as shown below), as well as
+the 2A and 2B tests.
+
+</p><pre>$ go test -run 2C
+Test (2C): basic persistence ...
+  ... Passed --   5.0  3   86   22849    6
+Test (2C): more persistence ...
+  ... Passed --  17.6  5  952  218854   16
+Test (2C): partitioned leader and one follower crash, leader restarts ...
+  ... Passed --   2.0  3   34    8937    4
+Test (2C): Figure 8 ...
+  ... Passed --  31.2  5  580  130675   32
+Test (2C): unreliable agreement ...
+  ... Passed --   1.7  5 1044  366392  246
+Test (2C): Figure 8 (unreliable) ...
+  ... Passed --  33.6  5 10700 33695245  308
+Test (2C): churn ...
+  ... Passed --  16.1  5 8864 44771259 1544
+Test (2C): unreliable churn ...
+  ... Passed --  16.5  5 4220 6414632  906
+PASS
+ok  	6.5840/raft	123.564s
+$
+</pre>
+
+<p>It is a good idea to run the tests multiple times before
+  submitting and check that each run prints <tt>PASS</tt>.
+</p><pre>$ for i in {0..10}; do go test; done
+</pre>
+
+
+<h3>Part 2D: log compaction <script>g("hard")</script>(<a class="hard" href="https://pdos.csail.mit.edu/6.824/labs/guidance.html">hard</a>)</h3>
+
+<p>
+As things stand now, a rebooting server replays the
+complete Raft log in order to restore its state. However, it's not
+practical for a long-running service to remember the complete Raft log
+forever. Instead, you'll modify Raft to cooperate with services that
+persistently store a "snapshot" of their state from time to time, at
+which point Raft discards log entries that precede the snapshot. The
+result is a smaller amount of persistent data and faster restart.
+However, it's now possible for a follower to fall so far behind that
+the leader has discarded the log entries it needs to catch up; the
+leader must then send a snapshot plus the log starting at the time of
+the snapshot. Section 7 of the
+<a href="https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf">extended Raft paper</a>
+outlines the scheme; you will have to design the details.
+
+</p><p>
+You may find it helpful to refer to the <a href="https://pdos.csail.mit.edu/6.824/notes/raft_diagram.pdf">diagram of Raft
+    interactions</a> to understand how the replicated service and Raft communicate.
+
+</p><p>
+Your Raft must provide the following function that the service
+can call with a serialized snapshot of its state:
+
+</p><p><tt>Snapshot(index int, snapshot []byte)</tt>
+
+</p><p>
+In Lab 2D, the tester calls <tt>Snapshot()</tt> periodically. In Lab 3, you will
+write a key/value server that calls <tt>Snapshot()</tt>; the snapshot
+will contain the complete table of key/value pairs.
+The service layer calls <tt>Snapshot()</tt> on every peer (not
+just on the leader).
+
+</p><p>The <tt>index</tt> argument indicates the highest log entry that's
+reflected in the snapshot. Raft should discard its log entries before
+that point. You'll need to revise your Raft code to operate while
+storing only the tail of the log.
+
+</p><p>
+You'll need to implement the <tt>InstallSnapshot</tt> RPC discussed in
+the paper that allows a Raft leader to tell a lagging Raft peer to
+replace its state with a snapshot. You will likely need to think
+through how InstallSnapshot should interact with the state and rules
+in Figure 2.
+
+</p><p>
+When a follower's Raft code receives an InstallSnapshot RPC, it can
+use the <tt>applyCh</tt> to send the snapshot to the service in
+an <tt>ApplyMsg</tt>. The <tt>ApplyMsg</tt> struct definition already
+contains the fields you will need (and which the tester expects). Take
+care that these snapshots only advance the service's state, and don't
+cause it to move backwards.
+
+</p><p>
+If a server crashes, it must restart from persisted data. Your Raft
+should persist both Raft state and the corresponding snapshot.
+Use the second argument to
+<tt>persister.Save()</tt> to save the snapshot.
+If there's no snapshot, pass <tt>nil</tt> as the second
+argument.
+
+</p><p>
+When a server restarts, the application layer reads the persisted
+snapshot and restores its saved state.
+
+</p><p class="todo">
+Implement <tt>Snapshot()</tt> and the InstallSnapshot RPC, as well as the
+changes to Raft to support these (e.g, operation with a
+trimmed log).  Your solution is complete when it passes the 2D tests
+(and all the previous Lab 2 tests).
+</p>
+
+<ul class="hints">
+
+<li> <tt>git pull</tt> to make sure you have the latest software.
+
+</li><li> A good place to start is to modify your code to so that it is
+able to store just the part of the log
+starting at some index X. Initially you can set X to zero and
+run the 2B/2C tests.
+Then make <tt>Snapshot(index)</tt> discard the log before <tt>index</tt>,
+and set X equal to <tt>index</tt>. If all goes well you should
+now pass the first 2D test.
+
+</li><li> You won't be able to store the log in a Go slice and use Go slice
+indices interchangeably with Raft log indices; you'll need to index
+the slice in a way that accounts for the discarded portion of the log.
+
+</li><li>Next: have the leader send an InstallSnapshot RPC if it doesn't
+have the log entries required to bring a follower up to date.
+
+</li><li>Send the entire snapshot in a single InstallSnapshot RPC.
+Don't implement Figure 13's <tt>offset</tt> mechanism for
+splitting up the snapshot.
+
+</li><li> Raft must discard old log entries in a way that allows the Go garbage collector to free and re-use the
+memory; this requires that there be no reachable references (pointers)
+to the discarded log entries.
+
+
+    </li><li> Even when the log is trimmed, your implemention still needs to properly send the term and index
+    of the entry prior to new entries in <tt>AppendEntries</tt> RPCs; this may require saving and referencing
+    the latest snapshot's <tt>lastIncludedTerm/lastIncludedIndex</tt> (consider whether this
+    should be persisted).
+
+</li><li>
+A reasonable amount of time to consume for the full set of
+Lab 2 tests (2A+2B+2C+2D) without <tt>-race</tt> is 6 minutes of real time and one
+minute of CPU time. When running with <tt>-race</tt>, it is about 10 minutes of real
+time and two minutes of CPU time.
+
+</li></ul>
+
+<p>
+Your code should pass all the 2D tests (as shown below), as well as the 2A, 2B, and 2C tests.
+
+</p><pre>$ go test -run 2D
+Test (2D): snapshots basic ...
+  ... Passed --  11.6  3  176   61716  192
+Test (2D): install snapshots (disconnect) ...
+  ... Passed --  64.2  3  878  320610  336
+Test (2D): install snapshots (disconnect+unreliable) ...
+  ... Passed --  81.1  3 1059  375850  341
+Test (2D): install snapshots (crash) ...
+  ... Passed --  53.5  3  601  256638  339
+Test (2D): install snapshots (unreliable+crash) ...
+  ... Passed --  63.5  3  687  288294  336
+Test (2D): crash and restart all servers ...
+  ... Passed --  19.5  3  268   81352   58
+PASS
+ok      6.5840/raft      293.456s
+</pre>
+
+
+
+
+
+
+
+
+
+
+
+
+</body><editor-card style="position:absolute;top:0px;left:0px;z-index:auto;display: block !important"><div dir="auto" style="all: initial;"><div style="color: initial; font: initial; font-palette: initial; font-synthesis: initial; forced-color-adjust: initial; text-orientation: initial; text-rendering: initial; -webkit-font-smoothing: initial; -webkit-locale: initial; -webkit-text-orientation: initial; -webkit-writing-mode: initial; writing-mode: initial; zoom: initial; accent-color: initial; place-content: initial; place-items: initial; place-self: initial; alignment-baseline: initial; animation-composition: initial; animation: initial; app-region: initial; appearance: initial; aspect-ratio: initial; backdrop-filter: initial; backface-visibility: initial; background: initial; background-blend-mode: initial; baseline-shift: initial; baseline-source: initial; block-size: initial; border-block: initial; border: initial; border-radius: initial; border-collapse: initial; border-end-end-radius: initial; border-end-start-radius: initial; border-inline: initial; border-start-end-radius: initial; border-start-start-radius: initial; inset: initial; box-shadow: initial; box-sizing: initial; break-after: initial; break-before: initial; break-inside: initial; buffered-rendering: initial; caption-side: initial; caret-color: initial; clear: initial; clip: initial; clip-path: initial; clip-rule: initial; color-interpolation: initial; color-interpolation-filters: initial; color-rendering: initial; color-scheme: initial; columns: initial; column-fill: initial; gap: initial; column-rule: initial; column-span: initial; contain: initial; contain-intrinsic-block-size: initial; contain-intrinsic-size: initial; contain-intrinsic-inline-size: initial; container: initial; content: initial; content-visibility: initial; counter-increment: initial; counter-reset: initial; counter-set: initial; cursor: initial; cx: initial; cy: initial; d: initial; display: initial; dominant-baseline: initial; empty-cells: initial; fill: initial; fill-opacity: initial; fill-rule: initial; filter: initial; flex: initial; flex-flow: initial; float: initial; flood-color: initial; flood-opacity: initial; grid: initial; grid-area: initial; height: initial; hyphenate-character: initial; hyphenate-limit-chars: initial; hyphens: initial; image-orientation: initial; image-rendering: initial; initial-letter: initial; inline-size: initial; inset-block: initial; inset-inline: initial; isolation: initial; letter-spacing: initial; lighting-color: initial; line-break: initial; list-style: initial; margin-block: initial; margin: initial; margin-inline: initial; marker: initial; mask: initial; mask-type: initial; math-depth: initial; math-shift: initial; math-style: initial; max-block-size: initial; max-height: initial; max-inline-size: initial; max-width: initial; min-block-size: initial; min-height: initial; min-inline-size: initial; min-width: initial; mix-blend-mode: initial; object-fit: initial; object-position: initial; object-view-box: initial; offset: initial; opacity: initial; order: initial; orphans: initial; outline: initial; outline-offset: initial; overflow-anchor: initial; overflow-clip-margin: initial; overflow-wrap: initial; overflow: initial; overscroll-behavior-block: initial; overscroll-behavior-inline: initial; overscroll-behavior: initial; padding-block: initial; padding: initial; padding-inline: initial; page: initial; page-orientation: initial; paint-order: initial; perspective: initial; perspective-origin: initial; pointer-events: initial; position: absolute; quotes: initial; r: initial; resize: initial; rotate: initial; ruby-position: initial; rx: initial; ry: initial; scale: initial; scroll-behavior: initial; scroll-margin-block: initial; scroll-margin: initial; scroll-margin-inline: initial; scroll-padding-block: initial; scroll-padding: initial; scroll-padding-inline: initial; scroll-snap-align: initial; scroll-snap-stop: initial; scroll-snap-type: initial; scrollbar-gutter: initial; shape-image-threshold: initial; shape-margin: initial; shape-outside: initial; shape-rendering: initial; size: initial; speak: initial; stop-color: initial; stop-opacity: initial; stroke: initial; stroke-dasharray: initial; stroke-dashoffset: initial; stroke-linecap: initial; stroke-linejoin: initial; stroke-miterlimit: initial; stroke-opacity: initial; stroke-width: initial; tab-size: initial; table-layout: initial; text-align: initial; text-align-last: initial; text-anchor: initial; text-combine-upright: initial; text-decoration: initial; text-decoration-skip-ink: initial; text-emphasis: initial; text-emphasis-position: initial; text-indent: initial; text-overflow: initial; text-shadow: initial; text-size-adjust: initial; text-transform: initial; text-underline-offset: initial; text-underline-position: initial; white-space: initial; touch-action: initial; transform: initial; transform-box: initial; transform-origin: initial; transform-style: initial; transition: initial; translate: initial; user-select: initial; vector-effect: initial; vertical-align: initial; view-transition-name: initial; visibility: initial; border-spacing: initial; -webkit-box-align: initial; -webkit-box-decoration-break: initial; -webkit-box-direction: initial; -webkit-box-flex: initial; -webkit-box-ordinal-group: initial; -webkit-box-orient: initial; -webkit-box-pack: initial; -webkit-box-reflect: initial; -webkit-highlight: initial; -webkit-line-break: initial; -webkit-line-clamp: initial; -webkit-mask-box-image: initial; -webkit-mask: initial; -webkit-mask-composite: initial; -webkit-print-color-adjust: initial; -webkit-rtl-ordering: initial; -webkit-ruby-position: initial; -webkit-tap-highlight-color: initial; -webkit-text-combine: initial; -webkit-text-decorations-in-effect: initial; -webkit-text-fill-color: initial; -webkit-text-security: initial; -webkit-text-stroke: initial; -webkit-user-drag: initial; -webkit-user-modify: initial; widows: initial; width: initial; will-change: initial; word-break: initial; word-spacing: initial; x: initial; y: initial; z-index: 2147483647;"><link rel="stylesheet" href="chrome-extension://hokifickgkhplphjiodbggjmoafhignh/fonts/fabric-icons.css"><div style="all: initial;"><template shadowrootmode="open"></template></div></div><div style="color: initial; font: initial; font-palette: initial; font-synthesis: initial; forced-color-adjust: initial; text-orientation: initial; text-rendering: initial; -webkit-font-smoothing: initial; -webkit-locale: initial; -webkit-text-orientation: initial; -webkit-writing-mode: initial; writing-mode: initial; zoom: initial; accent-color: initial; place-content: initial; place-items: initial; place-self: initial; alignment-baseline: initial; animation-composition: initial; animation: initial; app-region: initial; appearance: initial; aspect-ratio: initial; backdrop-filter: initial; backface-visibility: initial; background: initial; background-blend-mode: initial; baseline-shift: initial; baseline-source: initial; block-size: initial; border-block: initial; border: initial; border-radius: initial; border-collapse: initial; border-end-end-radius: initial; border-end-start-radius: initial; border-inline: initial; border-start-end-radius: initial; border-start-start-radius: initial; inset: initial; box-shadow: initial; box-sizing: initial; break-after: initial; break-before: initial; break-inside: initial; buffered-rendering: initial; caption-side: initial; caret-color: initial; clear: initial; clip: initial; clip-path: initial; clip-rule: initial; color-interpolation: initial; color-interpolation-filters: initial; color-rendering: initial; color-scheme: initial; columns: initial; column-fill: initial; gap: initial; column-rule: initial; column-span: initial; contain: initial; contain-intrinsic-block-size: initial; contain-intrinsic-size: initial; contain-intrinsic-inline-size: initial; container: initial; content: initial; content-visibility: initial; counter-increment: initial; counter-reset: initial; counter-set: initial; cursor: initial; cx: initial; cy: initial; d: initial; display: initial; dominant-baseline: initial; empty-cells: initial; fill: initial; fill-opacity: initial; fill-rule: initial; filter: initial; flex: initial; flex-flow: initial; float: initial; flood-color: initial; flood-opacity: initial; grid: initial; grid-area: initial; height: initial; hyphenate-character: initial; hyphenate-limit-chars: initial; hyphens: initial; image-orientation: initial; image-rendering: initial; initial-letter: initial; inline-size: initial; inset-block: initial; inset-inline: initial; isolation: initial; letter-spacing: initial; lighting-color: initial; line-break: initial; list-style: initial; margin-block: initial; margin: initial; margin-inline: initial; marker: initial; mask: initial; mask-type: initial; math-depth: initial; math-shift: initial; math-style: initial; max-block-size: initial; max-height: initial; max-inline-size: initial; max-width: initial; min-block-size: initial; min-height: initial; min-inline-size: initial; min-width: initial; mix-blend-mode: initial; object-fit: initial; object-position: initial; object-view-box: initial; offset: initial; opacity: initial; order: initial; orphans: initial; outline: initial; outline-offset: initial; overflow-anchor: initial; overflow-clip-margin: initial; overflow-wrap: initial; overflow: initial; overscroll-behavior-block: initial; overscroll-behavior-inline: initial; overscroll-behavior: initial; padding-block: initial; padding: initial; padding-inline: initial; page: initial; page-orientation: initial; paint-order: initial; perspective: initial; perspective-origin: initial; pointer-events: initial; position: absolute; quotes: initial; r: initial; resize: initial; rotate: initial; ruby-position: initial; rx: initial; ry: initial; scale: initial; scroll-behavior: initial; scroll-margin-block: initial; scroll-margin: initial; scroll-margin-inline: initial; scroll-padding-block: initial; scroll-padding: initial; scroll-padding-inline: initial; scroll-snap-align: initial; scroll-snap-stop: initial; scroll-snap-type: initial; scrollbar-gutter: initial; shape-image-threshold: initial; shape-margin: initial; shape-outside: initial; shape-rendering: initial; size: initial; speak: initial; stop-color: initial; stop-opacity: initial; stroke: initial; stroke-dasharray: initial; stroke-dashoffset: initial; stroke-linecap: initial; stroke-linejoin: initial; stroke-miterlimit: initial; stroke-opacity: initial; stroke-width: initial; tab-size: initial; table-layout: initial; text-align: initial; text-align-last: initial; text-anchor: initial; text-combine-upright: initial; text-decoration: initial; text-decoration-skip-ink: initial; text-emphasis: initial; text-emphasis-position: initial; text-indent: initial; text-overflow: initial; text-shadow: initial; text-size-adjust: initial; text-transform: initial; text-underline-offset: initial; text-underline-position: initial; white-space: initial; touch-action: initial; transform: initial; transform-box: initial; transform-origin: initial; transform-style: initial; transition: initial; translate: initial; user-select: initial; vector-effect: initial; vertical-align: initial; view-transition-name: initial; visibility: initial; border-spacing: initial; -webkit-box-align: initial; -webkit-box-decoration-break: initial; -webkit-box-direction: initial; -webkit-box-flex: initial; -webkit-box-ordinal-group: initial; -webkit-box-orient: initial; -webkit-box-pack: initial; -webkit-box-reflect: initial; -webkit-highlight: initial; -webkit-line-break: initial; -webkit-line-clamp: initial; -webkit-mask-box-image: initial; -webkit-mask: initial; -webkit-mask-composite: initial; -webkit-print-color-adjust: initial; -webkit-rtl-ordering: initial; -webkit-ruby-position: initial; -webkit-tap-highlight-color: initial; -webkit-text-combine: initial; -webkit-text-decorations-in-effect: initial; -webkit-text-fill-color: initial; -webkit-text-security: initial; -webkit-text-stroke: initial; -webkit-user-drag: initial; -webkit-user-modify: initial; widows: initial; width: initial; will-change: initial; word-break: initial; word-spacing: initial; x: initial; y: initial; z-index: 2147483647;"><link rel="stylesheet" href="chrome-extension://hokifickgkhplphjiodbggjmoafhignh/fonts/fabric-icons.css"></div><div id="editorNotificationContainer" style="color: initial; font: initial; font-palette: initial; font-synthesis: initial; forced-color-adjust: initial; text-orientation: initial; text-rendering: initial; -webkit-font-smoothing: initial; -webkit-locale: initial; -webkit-text-orientation: initial; -webkit-writing-mode: initial; writing-mode: initial; zoom: initial; accent-color: initial; place-content: initial; place-items: initial; place-self: initial; alignment-baseline: initial; animation-composition: initial; animation: initial; app-region: initial; appearance: initial; aspect-ratio: initial; backdrop-filter: initial; backface-visibility: initial; background: initial; background-blend-mode: initial; baseline-shift: initial; baseline-source: initial; block-size: initial; border-block: initial; border: initial; border-radius: initial; border-collapse: initial; border-end-end-radius: initial; border-end-start-radius: initial; border-inline: initial; border-start-end-radius: initial; border-start-start-radius: initial; bottom: 0px; box-shadow: initial; box-sizing: initial; break-after: initial; break-before: initial; break-inside: initial; buffered-rendering: initial; caption-side: initial; caret-color: initial; clear: initial; clip: initial; clip-path: initial; clip-rule: initial; color-interpolation: initial; color-interpolation-filters: initial; color-rendering: initial; color-scheme: initial; columns: initial; column-fill: initial; gap: initial; column-rule: initial; column-span: initial; contain: initial; contain-intrinsic-block-size: initial; contain-intrinsic-size: initial; contain-intrinsic-inline-size: initial; container: initial; content: initial; content-visibility: initial; counter-increment: initial; counter-reset: initial; counter-set: initial; cursor: initial; cx: initial; cy: initial; d: initial; display: flex; dominant-baseline: initial; empty-cells: initial; fill: initial; fill-opacity: initial; fill-rule: initial; filter: initial; flex: initial; flex-flow: column-reverse; float: initial; flood-color: initial; flood-opacity: initial; grid: initial; grid-area: initial; height: initial; hyphenate-character: initial; hyphenate-limit-chars: initial; hyphens: initial; image-orientation: initial; image-rendering: initial; initial-letter: initial; inline-size: initial; inset-block: initial; inset-inline: initial; isolation: initial; left: initial; letter-spacing: initial; lighting-color: initial; line-break: initial; list-style: initial; margin-block: initial; margin: 1em; margin-inline: initial; marker: initial; mask: initial; mask-type: initial; math-depth: initial; math-shift: initial; math-style: initial; max-block-size: initial; max-height: initial; max-inline-size: initial; max-width: initial; min-block-size: initial; min-height: initial; min-inline-size: initial; min-width: initial; mix-blend-mode: initial; object-fit: initial; object-position: initial; object-view-box: initial; offset: initial; opacity: initial; order: initial; orphans: initial; outline: initial; outline-offset: initial; overflow-anchor: initial; overflow-clip-margin: initial; overflow-wrap: initial; overflow: initial; overscroll-behavior-block: initial; overscroll-behavior-inline: initial; overscroll-behavior: initial; padding-block: initial; padding: initial; padding-inline: initial; page: initial; page-orientation: initial; paint-order: initial; perspective: initial; perspective-origin: initial; pointer-events: initial; position: fixed; quotes: initial; r: initial; resize: initial; right: 0px; rotate: initial; ruby-position: initial; rx: initial; ry: initial; scale: initial; scroll-behavior: initial; scroll-margin-block: initial; scroll-margin: initial; scroll-margin-inline: initial; scroll-padding-block: initial; scroll-padding: initial; scroll-padding-inline: initial; scroll-snap-align: initial; scroll-snap-stop: initial; scroll-snap-type: initial; scrollbar-gutter: initial; shape-image-threshold: initial; shape-margin: initial; shape-outside: initial; shape-rendering: initial; size: initial; speak: initial; stop-color: initial; stop-opacity: initial; stroke: initial; stroke-dasharray: initial; stroke-dashoffset: initial; stroke-linecap: initial; stroke-linejoin: initial; stroke-miterlimit: initial; stroke-opacity: initial; stroke-width: initial; tab-size: initial; table-layout: initial; text-align: initial; text-align-last: initial; text-anchor: initial; text-combine-upright: initial; text-decoration: initial; text-decoration-skip-ink: initial; text-emphasis: initial; text-emphasis-position: initial; text-indent: initial; text-overflow: initial; text-shadow: initial; text-size-adjust: initial; text-transform: initial; text-underline-offset: initial; text-underline-position: initial; white-space: initial; top: initial; touch-action: initial; transform: initial; transform-box: initial; transform-origin: initial; transform-style: initial; transition: initial; translate: initial; user-select: initial; vector-effect: initial; vertical-align: initial; view-transition-name: initial; visibility: initial; border-spacing: initial; -webkit-box-align: initial; -webkit-box-decoration-break: initial; -webkit-box-direction: initial; -webkit-box-flex: initial; -webkit-box-ordinal-group: initial; -webkit-box-orient: initial; -webkit-box-pack: initial; -webkit-box-reflect: initial; -webkit-highlight: initial; -webkit-line-break: initial; -webkit-line-clamp: initial; -webkit-mask-box-image: initial; -webkit-mask: initial; -webkit-mask-composite: initial; -webkit-print-color-adjust: initial; -webkit-rtl-ordering: initial; -webkit-ruby-position: initial; -webkit-tap-highlight-color: initial; -webkit-text-combine: initial; -webkit-text-decorations-in-effect: initial; -webkit-text-fill-color: initial; -webkit-text-security: initial; -webkit-text-stroke: initial; -webkit-user-drag: initial; -webkit-user-modify: initial; widows: initial; width: initial; will-change: initial; word-break: initial; word-spacing: initial; x: initial; y: initial; z-index: 2147483647;"></div></div></editor-card><div id="saladict-saladbowl-root" class="saladict-div saladict-external"><div class="saladict-external"><template shadowrootmode="open"><div class="isAnimate" style="all: initial;"><style>.saladbowl{position:fixed;z-index:2147483647;top:0;left:0;width:30px;height:30px;-moz-user-select:none;user-select:none;cursor:pointer}.isAnimate .saladbowl{will-change:transform;transition:transform .3s ease-out}.isAnimate .saladbowl.enableHover:hover .saladbowl-leaf{animation:saladbowl-leaf-shake .7s infinite linear}.isAnimate .saladbowl.enableHover:hover .saladbowl-orange{transform-origin:301.8px 187.4px;animation:saladbowl-orange-spin .7s infinite linear}.isAnimate .saladbowl.enableHover:hover .saladbowl-tomato{transform-origin:297.8px 126.4px;animation:saladbowl-tomato-shake .7s infinite linear}.saladbowl,.saladbowl>svg{background-color:transparent!important}.isAnimate .saladbowl-enter-active>svg{animation:saladbowl-jelly 1s linear}.isAnimate .saladbowl-exit{opacity:1}.isAnimate .saladbowl-exit-active{opacity:0;transition:opacity .1s}.saladbowl-exit-done{display:none}@keyframes saladbowl-jelly{0%{transform:matrix3d(.5,0,0,0,0,.5,0,0,0,0,1,0,0,0,0,1)}3.40%{transform:matrix3d(.658,0,0,0,0,.703,0,0,0,0,1,0,0,0,0,1)}4.70%{transform:matrix3d(.725,0,0,0,0,.8,0,0,0,0,1,0,0,0,0,1)}6.81%{transform:matrix3d(.83,0,0,0,0,.946,0,0,0,0,1,0,0,0,0,1)}9.41%{transform:matrix3d(.942,0,0,0,0,1.084,0,0,0,0,1,0,0,0,0,1)}10.21%{transform:matrix3d(.971,0,0,0,0,1.113,0,0,0,0,1,0,0,0,0,1)}13.61%{transform:matrix3d(1.062,0,0,0,0,1.166,0,0,0,0,1,0,0,0,0,1)}14.11%{transform:matrix3d(1.07,0,0,0,0,1.165,0,0,0,0,1,0,0,0,0,1)}17.52%{transform:matrix3d(1.104,0,0,0,0,1.12,0,0,0,0,1,0,0,0,0,1)}18.72%{transform:matrix3d(1.106,0,0,0,0,1.094,0,0,0,0,1,0,0,0,0,1)}21.32%{transform:matrix3d(1.098,0,0,0,0,1.035,0,0,0,0,1,0,0,0,0,1)}24.32%{transform:matrix3d(1.075,0,0,0,0,.98,0,0,0,0,1,0,0,0,0,1)}25.23%{transform:matrix3d(1.067,0,0,0,0,.969,0,0,0,0,1,0,0,0,0,1)}29.03%{transform:matrix3d(1.031,0,0,0,0,.948,0,0,0,0,1,0,0,0,0,1)}29.93%{transform:matrix3d(1.024,0,0,0,0,.949,0,0,0,0,1,0,0,0,0,1)}35.54%{transform:matrix3d(.99,0,0,0,0,.981,0,0,0,0,1,0,0,0,0,1)}36.74%{transform:matrix3d(.986,0,0,0,0,.989,0,0,0,0,1,0,0,0,0,1)}41.04%{transform:matrix3d(.98,0,0,0,0,1.011,0,0,0,0,1,0,0,0,0,1)}44.44%{transform:matrix3d(.983,0,0,0,0,1.016,0,0,0,0,1,0,0,0,0,1)}52.15%{transform:matrix3d(.996,0,0,0,0,1.003,0,0,0,0,1,0,0,0,0,1)}59.86%{transform:matrix3d(1.003,0,0,0,0,.995,0,0,0,0,1,0,0,0,0,1)}63.26%{transform:matrix3d(1.004,0,0,0,0,.996,0,0,0,0,1,0,0,0,0,1)}75.28%{transform:matrix3d(1.001,0,0,0,0,1.002,0,0,0,0,1,0,0,0,0,1)}85.49%{transform:matrix3d(.999,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)}90.69%{transform:matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)}100%{transform:matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)}}@keyframes saladbowl-leaf-shake{0%{transform:translate(2px,1px) rotate(0)}10%{transform:translate(-1px,-2px) rotate(1deg)}20%{transform:translate(-2px,0) rotate(1deg)}30%{transform:translate(0,2px) rotate(0)}40%{transform:translate(1px,-1px) rotate(1deg)}50%{transform:translate(-1px,2px) rotate(1deg)}60%{transform:translate(-2px,1px) rotate(0)}70%{transform:translate(2px,1px) rotate(1deg)}80%{transform:translate(-1px,-1px) rotate(1deg)}90%{transform:translate(2px,2px) rotate(0)}100%{transform:translate(1px,-2px) rotate(1deg)}}@keyframes saladbowl-orange-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}@keyframes saladbowl-tomato-shake{0%{transform:rotate(10deg)}30%{transform:rotate(0)}60%{transform:rotate(10deg)}90%{transform:rotate(0)}100%{transform:rotate(5deg)}}</style><div role="img" class="saladbowl saladict-external enableHover saladbowl-enter-done" style="transform: translate(291px, 786px);"><svg viewBox="0 0 612 612" width="30" height="30"><g class="saladbowl-leaf"><path fill="#6bbc57" d="M 577.557 184.258 C 560.417 140.85 519.54 59.214 519.54 59.214 L 519.543 59.204 C 519.543 59.204 436.903 97.626 396.441 120.878 C 366.171 138.274 354.981 169.755 352.221 177.621 C 349.001 186.851 339.891 228.811 358.341 268.481 C 382.271 319.921 409.201 374.521 409.201 374.521 L 409.201 374.531 C 409.201 374.531 464.511 348.701 515.291 323.401 C 554.451 303.891 573.591 265.441 576.821 256.221 C 579.571 248.356 590.398 216.746 577.574 184.271 Z"></path><path fill="#bde9b7" d="M 501.052 102.162 L 507.518 104.425 L 426.69 335.38 L 420.224 333.117 Z"></path></g><g class="saladbowl-orange"><circle fill="#ffb30d" cx="299.756" cy="198.246" r="178.613"></circle><circle fill="#fce29c" cx="299.756" cy="198.246" r="155.24"></circle><path fill="#fcc329" d="M 299.756 189.873 L 341.269 113.475 C 349.169 82.543 324.349 58.588 299.749 57.891 C 275.149 57.201 248.229 82.781 256.489 113.481 L 299.749 189.881 Z M 307.026 194.757 L 393.974 194.757 C 424.928 187.083 434.124 153.681 422.994 131.737 C 411.864 109.795 376.534 98.357 353.5 120.27 L 307.025 194.757 Z M 308.79 203.444 L 354.885 277.168 C 377.925 299.268 410.995 289.438 423.701 268.368 C 436.411 247.298 427.381 211.276 396.591 203.362 L 308.801 203.442 Z M 300.208 206.618 L 259.628 283.516 C 252.098 314.543 277.214 338.193 301.815 338.591 C 326.415 338.991 353.022 313.081 344.392 282.491 L 300.208 206.631 Z M 292.058 203.3 L 205.108 203.415 C 174.163 211.277 165.014 244.54 176.172 266.468 C 187.33 288.396 226.052 300.541 249.056 278.598 L 292.056 203.301 Z M 292.465 194.83 L 246.497 121.024 C 223.494 98.884 190.409 108.658 177.667 129.706 C 164.925 150.753 173.893 186.791 204.669 194.756 L 292.459 194.829 Z"></path></g><g class="saladbowl-tomato"><path fill="#a63131" d="M 71.014 337.344 C 147.291 422.594 278.234 429.866 363.482 353.589 L 87.258 44.87 C 2.01 121.15 -5.262 252.092 71.014 337.342 Z"></path><path fill="#bc5757" d="M 101.447 310.115 C 162.685 378.555 267.811 384.393 336.251 323.155 L 114.49 75.31 C 46.047 136.55 40.21 241.674 101.447 310.115 Z"></path><path fill="#f1d4af" d="M 186.412 237.54 L 151.659 245.444 C 139.989 251.384 139.339 265.51 145.779 273.27 C 152.219 281.028 167.379 282.39 174.599 271.538 L 186.399 237.54 Z M 242.062 269.832 L 223.366 300.175 C 219.439 312.658 229.066 323.018 239.116 323.85 C 249.168 324.685 260.756 314.815 258.061 302.065 L 242.061 269.832 Z M 160.202 178.317 L 130.357 158.837 C 117.98 154.585 107.375 163.939 106.277 173.965 C 105.183 183.99 114.747 195.833 127.563 193.471 L 160.203 178.321 Z"></path></g><g class="saladbowl-bowl"><path fill="#2d97b7" d="M 30.857 311.46 C 30.857 429.87 105.371 530.8 209.867 569.52 L 209.867 589.2 L 400.987 589.2 L 400.987 568.9 C 503.595 530.114 576.887 431.202 578.31 314.907 L 589.196 295.97 L 22.804 295.97 L 30.867 309.998 C 30.865 310.488 30.857 310.971 30.857 311.458 Z"></path><path fill="#fff" d="M 540.565 321.42 C 540.585 322.587 540.595 323.755 540.595 324.927 C 540.595 405.941 497.513 476.884 433.015 516.122 L 437.178 523.317 C 504.152 482.64 548.895 409.009 548.895 324.927 C 548.895 323.755 548.885 322.587 548.865 321.419 Z M 399.885 532.68 C 388.298 537.31 376.237 541.002 363.793 543.654 L 363.793 544.45 L 364.971 551.893 C 378.481 549.049 391.551 545.018 404.081 539.935 Z"></path></g></svg></div></div></template></div></div></html>

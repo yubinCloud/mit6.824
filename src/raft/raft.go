@@ -85,10 +85,12 @@ const (
 	RAFT_ROLE_LEADER    = 2
 )
 
+// 打印一个 leader 的当前状态，即有哪些人给他投票才当选的
 func (rf *Raft) debug() {
 	log.Printf("ID %d, term %d: recv-votes %v", rf.me, rf.currentTerm, rf.recvVotes)
 }
 
+// 将 rf 转变为 follower 角色
 func (rf *Raft) toFollower() {
 	rf.votedFor = -1
 	rf.voteCnt = 0
@@ -255,11 +257,15 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 	rf.hasReceived = true
 
 	// 比较谁更 up-to-date
+	// ..
+
+	// 比较 term
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return
 	}
+	// 如果 rf 是 candidate，表示当前任期有人成功当选 leader，此时 rf 应当转为 follower
 	if rf.role == RAFT_ROLE_CANDIDATE {
 		rf.currentTerm = args.Term
 		rf.toFollower()
@@ -320,6 +326,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+// 向一个 server 发送一个 AppendEntries 的请求
 func (rf *Raft) sendAppendEntriesToOne(peerIndex int) {
 	args := &AppendEntriesArgs{}
 	args.LeaderId = rf.me
@@ -345,6 +352,7 @@ func (rf *Raft) sendAppendEntriesToOne(peerIndex int) {
 	}
 }
 
+// 向所有 server 发送 AppendEntries 的请求
 func (rf *Raft) sendAppendEntriesToAll(entries []LogEntry) {
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -354,13 +362,15 @@ func (rf *Raft) sendAppendEntriesToAll(entries []LogEntry) {
 	}
 }
 
+// rf 向一个 server 索要投票
 func (rf *Raft) askVote(peerIdx int) {
 	rf.mu.Lock()
 	role := rf.role
-	if role != RAFT_ROLE_CANDIDATE {
+	if role != RAFT_ROLE_CANDIDATE { // 先判断一下自己还是不是 candidate，不是的话就不能再要票了
 		rf.mu.Unlock()
 		return
 	}
+	// 准备发送 RequestVote 的 RPC 请求
 	args := &RequestVoteArgs{}
 	args.Term = rf.currentTerm
 	rf.mu.Unlock()
@@ -370,22 +380,25 @@ func (rf *Raft) askVote(peerIdx int) {
 	args.LastLogTerm = 0
 	reply := &RequestVoteReply{}
 	ok := rf.sendRequestVote(peerIdx, args, reply)
+	// 解析 RPC 响应的结果
 	if !ok {
-		return
+		return // 发送失败直接返回
 	}
 	rf.mu.Lock()
-	if reply.Term > rf.currentTerm {
+	if reply.Term > rf.currentTerm { // 比较一下 term
 		rf.currentTerm = reply.Term
 		rf.toFollower()
 		rf.mu.Unlock()
 		return
 	}
-	if !reply.VoteGranted {
+	if !reply.VoteGranted { // 如果对方不投票，说明它已经投给了别人，直接 return 就好了
 		rf.mu.Unlock()
 		return
-	} else {
+	} else { // 如果对方投票了，那就要更新一下票数，同时判断一下是否能够转变成 leader
+		// 更新票数
 		rf.voteCnt += 1
 		rf.recvVotes[peerIdx] = true
+		// 判断能否转变为 leader，但要*注意*，只有 candidate 才有转变的必要
 		if rf.role == RAFT_ROLE_CANDIDATE && rf.voteCnt >= len(rf.peers)/2+1 {
 			rf.role = RAFT_ROLE_LEADER
 			rf.debug()
@@ -434,7 +447,7 @@ func (rf *Raft) ticker() {
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		} else {
 			rf.mu.Unlock()
-			rf.sendAppendEntriesToAll(make([]LogEntry, 0))
+			rf.sendAppendEntriesToAll(make([]LogEntry, 0)) // 向所有 server 发送 heartbeat
 			ms := 100
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
