@@ -21,6 +21,8 @@ import (
 	//	"bytes"
 	"log"
 	"math/rand"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -31,6 +33,15 @@ import (
 // 打印一个 leader 的当前状态，即有哪些人给他投票才当选的
 func (rf *Raft) debug() {
 	log.Printf("ID %d, term %d: recv-votes %v", rf.me, rf.currentTerm, rf.recvVotes)
+}
+
+func (rf *Raft) showLogs() string {
+	logTerms := make([]string, 0)
+	for i := 0; i < len(rf.logs); i++ {
+		logTerms = append(logTerms, strconv.Itoa(i))
+	}
+	s := "[" + strings.Join(logTerms, ",") + "]"
+	return s
 }
 
 // 将 rf 转变为 follower 角色
@@ -120,13 +131,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	// If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote
+	lastLogIndex := len(rf.logs) - 1
+	lastLogTerm := rf.logs[lastLogIndex].Term
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		rf.votedFor = args.CandidateId
-		reply.VoteGranted = true
-		return
-	} else {
-		reply.VoteGranted = false
+		if lastLogTerm < args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex <= args.LastLogIndex) {
+			rf.votedFor = args.CandidateId
+			reply.VoteGranted = true
+			DPrintf("# recv RequestVote, %d vote for %d at term %d", rf.me, args.CandidateId, rf.currentTerm)
+			return
+		}
 	}
+	reply.VoteGranted = false
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -157,6 +172,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	DPrintf("# send RequestVote, from %d to %d at term %d", rf.me, server, args.Term)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -166,19 +182,17 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 	defer rf.mu.Unlock()
 
 	rf.hasReceived = true
+	DPrintf("# recv AppendEntries, rf %d recevie AppendEntries, args: %v, before logs %s", rf.me, args, rf.showLogs())
 
-	// 比较谁更 up-to-date
-	// ..
-
-	// 比较 term
+	// 1. Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return
 	}
+
 	// 如果 rf 是 candidate，表示当前任期有人成功当选 leader，此时 rf 应当转为 follower
-	if rf.role == RAFT_ROLE_CANDIDATE {
-		rf.currentTerm = args.Term
+	if rf.currentTerm == args.Term && rf.role == RAFT_ROLE_CANDIDATE {
 		rf.toFollower()
 	}
 
@@ -186,6 +200,38 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.toFollower()
+	}
+	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+	if len(rf.logs) <= args.PrevLogIndex {
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it
+	if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		rf.logs = rf.logs[:args.PrevLogIndex]
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	// 4. Append any new entries not already in the log
+	if len(args.Entries) > 0 {
+		rf.logs = append(rf.logs, args.Entries...)
+	}
+	// 5.  If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = len(rf.logs) - 1
+		if rf.commitIndex > args.LeaderCommit {
+			rf.commitIndex = args.LeaderCommit
+		}
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			applyMsg := ApplyMsg{}
+			applyMsg.CommandValid = true
+			applyMsg.Command = rf.logs[i].Command
+			applyMsg.CommandIndex = i
+			rf.applyCh <- applyMsg
+		}
+		rf.lastApplied = rf.commitIndex
 	}
 	reply.Success = true
 	reply.Term = rf.currentTerm
@@ -209,12 +255,22 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (2B).
-
+	rf.mu.Lock()
+	term := rf.currentTerm
+	isLeader := rf.role == RAFT_ROLE_LEADER
+	// 如果不是 leader，立刻返回 false
+	if !isLeader {
+		rf.mu.Unlock()
+		return -1, term, false
+	}
+	// 给自己追加 log entry
+	entry := &LogEntry{
+		Term:    term,
+		Command: command,
+	}
+	index := len(rf.logs)
+	rf.logs = append(rf.logs, entry)
+	rf.mu.Unlock()
 	return index, term, isLeader
 }
 
@@ -237,11 +293,31 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+// return value 表示是否要退出
+func (rf *Raft) retryLoopSendAppendEntries(peerIndex int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	// 一直尝试，直至成功 server 响应
+	ok := false
+	for {
+		ok = rf.sendAppendEntries(peerIndex, args, reply)
+		if ok {
+			break
+		}
+		rf.mu.Lock()
+		if rf.killed() || rf.role != RAFT_ROLE_LEADER {
+			rf.mu.Unlock()
+			return true
+		}
+		rf.mu.Unlock()
+		time.Sleep(15 * time.Millisecond)
+	}
+	return false
+}
+
 // 向一个 server 发送一个 AppendEntries 的请求
 func (rf *Raft) sendAppendEntriesToOne(peerIndex int) {
 	args := &AppendEntriesArgs{}
 	args.LeaderId = rf.me
-	args.Entries = make([]LogEntry, 0)
+	args.Entries = make([]*LogEntry, 0)
 	reply := &AppendEntriesReply{}
 	rf.mu.Lock()
 	args.Term = rf.currentTerm
@@ -273,6 +349,65 @@ func (rf *Raft) sendAppendEntriesToAll(entries []LogEntry) {
 	}
 }
 
+func (rf *Raft) logReplication(peer int) {
+	found := false // 表示是否找到 leader 与 follower 的差异点
+	for !rf.killed() && !found {
+		rf.mu.Lock()
+		nextIndex := rf.nextIndex[peer]
+		prevLogIndex := nextIndex - 1
+
+		var entries []*LogEntry
+		if nextIndex == len(rf.logs) {
+			entries = make([]*LogEntry, 0)
+		} else {
+			entries = rf.logs[nextIndex:]
+		}
+		args := &AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  rf.logs[prevLogIndex].Term,
+			Entries:      entries,
+			LeaderCommit: rf.commitIndex,
+		}
+		rf.mu.Unlock()
+		reply := &AppendEntriesReply{}
+		ok := false
+		DPrintf("# send AppendEntries: from %d to peer %d, term %d: prevLogIndex %d", rf.me, peer, rf.currentTerm, prevLogIndex)
+		for !ok && !rf.killed() {
+			ok = rf.sendAppendEntries(peer, args, reply)
+			if !ok {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		rf.mu.Lock()
+		if reply.Success {
+			rf.nextIndex[peer] = nextIndex + len(entries)
+			rf.matchIndex[peer] = rf.nextIndex[peer] - 1
+			rf.mu.Unlock()
+			found = true
+			break
+		} else {
+			if reply.Term > args.Term {
+				if rf.currentTerm < reply.Term {
+					rf.currentTerm = reply.Term
+					rf.toFollower()
+				}
+				rf.mu.Unlock()
+				return
+			}
+			if reply.Term == args.Term {
+				rf.nextIndex[peer]--
+				rf.mu.Unlock()
+				continue
+			} else {
+				rf.mu.Unlock()
+				continue
+			}
+		}
+	}
+}
+
 // rf 向一个 server 索要投票
 func (rf *Raft) askVote(peerIdx int) {
 	rf.mu.Lock()
@@ -284,11 +419,10 @@ func (rf *Raft) askVote(peerIdx int) {
 	// 准备发送 RequestVote 的 RPC 请求
 	args := &RequestVoteArgs{}
 	args.Term = rf.currentTerm
-	rf.mu.Unlock()
-
 	args.CandidateId = rf.me
-	args.LastLogIndex = 0
-	args.LastLogTerm = 0
+	args.LastLogIndex = len(rf.logs) - 1
+	args.LastLogTerm = rf.logs[args.LastLogIndex].Term
+	rf.mu.Unlock()
 	reply := &RequestVoteReply{}
 	ok := rf.sendRequestVote(peerIdx, args, reply)
 	// 解析 RPC 响应的结果
@@ -312,13 +446,50 @@ func (rf *Raft) askVote(peerIdx int) {
 		// 判断能否转变为 leader，但要*注意*，只有 candidate 才有转变的必要
 		if rf.role == RAFT_ROLE_CANDIDATE && rf.voteCnt >= len(rf.peers)/2+1 {
 			rf.role = RAFT_ROLE_LEADER
+			for i := 0; i < len(rf.peers); i++ {
+				rf.nextIndex[i] = len(rf.logs)
+				rf.matchIndex[i] = 0
+			}
 			rf.debug()
 			rf.mu.Unlock()
-			rf.sendAppendEntriesToAll(make([]LogEntry, 0))
+			// 立刻发送一次 heartbeat
+			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me {
+					continue
+				}
+				go rf.logReplication(i)
+			}
 		} else {
 			rf.mu.Unlock()
 		}
 		return
+	}
+}
+
+func (rf *Raft) checkLeaderCommit() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	for n := len(rf.logs) - 1; n > rf.commitIndex; n-- {
+		if rf.logs[n].Term == rf.currentTerm {
+			cnt := 0
+			for i := 0; i < len(rf.peers); i++ {
+				if rf.matchIndex[i] >= n {
+					cnt++
+				}
+			}
+			if cnt >= len(rf.peers)/2+1 {
+				rf.commitIndex = n
+				for j := rf.lastApplied + 1; j <= rf.commitIndex; j++ {
+					applyMsg := ApplyMsg{}
+					applyMsg.CommandValid = true
+					applyMsg.Command = rf.logs[j].Command
+					applyMsg.CommandIndex = j
+					rf.applyCh <- applyMsg
+				}
+				rf.lastApplied = rf.commitIndex
+				break
+			}
+		}
 	}
 }
 
@@ -354,13 +525,20 @@ func (rf *Raft) ticker() {
 
 			// pause for a random amount of time between 500 and 1000
 			// milliseconds.
-			ms := 800 + (rand.Int63() % 1000)
+			ms := 900 + (rand.Int63() % 1100)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		} else {
 			rf.mu.Unlock()
-			rf.sendAppendEntriesToAll(make([]LogEntry, 0)) // 向所有 server 发送 heartbeat
-			ms := 100
+			// rf.sendAppendEntriesToAll(make([]LogEntry, 0)) // 向所有 server 发送 heartbeat
+			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me {
+					continue
+				}
+				go rf.logReplication(i)
+			}
+			ms := 130
 			time.Sleep(time.Duration(ms) * time.Millisecond)
+			rf.checkLeaderCommit()
 		}
 
 	}
@@ -381,6 +559,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.mu.Lock()
@@ -388,9 +567,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.hasReceived = false
 	rf.currentTerm = 0
 	rf.votedFor = -1
-	rf.logs = make([]*LogEntry, 0, 10)
+	rf.logs = make([]*LogEntry, 1, 10)
+	rf.logs[0] = &LogEntry{
+		Term:    0,
+		Command: nil,
+	}
 	rf.voteCnt = 0
 	rf.recvVotes = make([]bool, len(peers))
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 	rf.mu.Unlock()
 
 	// initialize from state persisted before a crash

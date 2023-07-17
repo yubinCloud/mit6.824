@@ -39,6 +39,7 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
+	applyCh   chan ApplyMsg
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -53,6 +54,14 @@ type Raft struct {
 	recvVotes []bool
 
 	lastFrom int // 记录上一个 AppendEntries 来自于谁
+
+	// volatile state on all servers
+	commitIndex int
+	lastApplied int
+
+	// volatile state on leaders
+	nextIndex  []int
+	matchIndex []int
 }
 
 // Raft 的 role
@@ -88,7 +97,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []LogEntry
+	Entries      []*LogEntry
 	LeaderCommit int
 }
 
