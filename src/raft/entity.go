@@ -2,6 +2,7 @@ package raft
 
 import (
 	"sync"
+	"time"
 
 	"6.5840/labrpc"
 )
@@ -34,7 +35,7 @@ type LogEntry struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        sync.RWMutex        // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -44,8 +45,8 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	role        int  // Raft peer 的角色，0 - follower，1 - candidate，2 - leader
-	hasReceived bool // 每次 election timeout 期间是否有接收到消息
+	role        int // Raft peer 的角色，0 - follower，1 - candidate，2 - leader
+	lastRecv    time.Time
 	currentTerm int
 	votedFor    int
 	logs        []*LogEntry
@@ -62,6 +63,8 @@ type Raft struct {
 	// volatile state on leaders
 	nextIndex  []int
 	matchIndex []int
+
+	electionTimeout time.Duration
 }
 
 // Raft 的 role
@@ -102,6 +105,8 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term          int
+	Success       bool
+	ConflictTerm  int
+	ConflictIndex int
 }
