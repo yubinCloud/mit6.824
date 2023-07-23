@@ -35,7 +35,7 @@ type LogEntry struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.RWMutex        // Lock to protect shared access to this peer's state
+	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -51,8 +51,7 @@ type Raft struct {
 	votedFor    int
 	logs        []*LogEntry
 
-	voteCnt   int // 代表有几票了
-	recvVotes []bool
+	voteCnt int // 代表有几票了
 
 	lastFrom int // 记录上一个 AppendEntries 来自于谁
 
@@ -63,8 +62,6 @@ type Raft struct {
 	// volatile state on leaders
 	nextIndex  []int
 	matchIndex []int
-
-	electionTimeout time.Duration
 }
 
 // Raft 的 role
