@@ -45,11 +45,13 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	role        int // Raft peer 的角色，0 - follower，1 - candidate，2 - leader
-	lastRecv    time.Time
-	currentTerm int
-	votedFor    int
-	logs        []*LogEntry
+	role             int // Raft peer 的角色，0 - follower，1 - candidate，2 - leader
+	lastRecv         time.Time
+	currentTerm      int
+	votedFor         int
+	logs             []*LogEntry
+	lastIncluedIndex int
+	lastIncluedTerm  int
 
 	voteCnt int // 代表有几票了
 
@@ -106,4 +108,16 @@ type AppendEntriesReply struct {
 	Success       bool
 	ConflictTerm  int
 	ConflictIndex int
+}
+
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
+
+type InstallSnapshotReply struct {
+	Term int
 }
